@@ -1,5 +1,8 @@
+#include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <iostream>
+#include <utility>
 
 #include "open_sans_semibold.h"
 #include <SFML/Graphics.hpp>
@@ -38,7 +41,8 @@ int main() {
     fullscreenTriangle[2].texCoords = {0, 2};
     // load vertex and fragment shaders:
     sf::Shader shader(std::filesystem::path{"main.vert"}, std::filesystem::path{"main.frag"});
-    // ... other shaders can go here...
+    // Copies the accumulated frame into the window.
+    sf::Shader copyShader(std::filesystem::path{"main.vert"}, std::filesystem::path{"copy.frag"});
 
     sf::Font openSansFont(EmbeddedFonts::OpenSans_SemiBold_ttf,
                           EmbeddedFonts::OpenSans_SemiBold_ttf_len);
@@ -56,6 +60,18 @@ int main() {
     float worldUnitsPerPixel = 1.f / window.getSize().y;
     sf::Vector2f camCenterWorld{0.f, 0.f};
     int maxIters = INIT_ITERS;
+
+    // Two buffers alternate as the previous and current frame for temporal accumulation.
+    sf::RenderTexture front(window.getSize());
+    sf::RenderTexture back(window.getSize());
+    front.setSmooth(true);  // linear sampling for reprojection
+    back.setSmooth(true);
+    const sf::Vector2f windowSizePixels{static_cast<float>(window.getSize().x),
+                                        static_cast<float>(window.getSize().y)};
+    sf::Vector2f oldCamCenterWorld = camCenterWorld;
+    float oldWorldUnitsPerPixel = 0.f;  // 0 until there is a previous frame
+    sf::Vector2f oldC = c;
+    bool hasOldFrame = false;
 
     int i = -1;
     while (window.isOpen()) {
@@ -113,18 +129,42 @@ int main() {
         } else {
             maxIters = std::min(maxIters * 2, TRUE_MAX_ITERS);
         }
-        // TODO set shader uniforms here...
+        // The previous frame is only useful if c did not change.
+        const bool cChanged = (c.x != oldC.x) || (c.y != oldC.y);
 
+        shader.setUniform("c", c);
+        shader.setUniform("MAX_ITERS", maxIters);
+        shader.setUniform("windowSizePixels", windowSizePixels);
+        shader.setUniform("camCenterWorld", camCenterWorld);
+        shader.setUniform("camWorldUnitsPerPixel", worldUnitsPerPixel);
+        shader.setUniform("oldCamCenterWorld", oldCamCenterWorld);
+        shader.setUniform("oldCamWorldUnitsPerPixel", hasOldFrame ? oldWorldUnitsPerPixel : 0.f);
+        shader.setUniform("cChanged", cChanged);
+        if (hasOldFrame) {
+            shader.setUniform("oldFrame", front.getTexture());
+        }
+
+        // Render the new frame into the back buffer...
+        back.clear(sf::Color::Black);
+        back.draw(fullscreenTriangle, &shader);
+        back.display();
+
+        // ...then copy it into the window.
+        copyShader.setUniform("toCopy", back.getTexture());
         window.clear(sf::Color::Black);
-        // TODO something.draw(fullscreenTriangle, &shader);
-        // this might change as you finish more parts!
+        window.draw(fullscreenTriangle, &copyShader);
         cText.setString("c = (" + std::to_string(c.x) + ", " + std::to_string(c.y) + ")");
         cTextShadow.setString("c = (" + std::to_string(c.x) + ", " + std::to_string(c.y) + ")");
         window.draw(cTextShadow);
         window.draw(cText);
         window.display();
 
-        // TODO (reprojection)... update "old" states
+        // The frame just rendered becomes the history for the next one.
+        std::swap(front, back);
+        hasOldFrame = true;
+        oldCamCenterWorld = camCenterWorld;
+        oldWorldUnitsPerPixel = worldUnitsPerPixel;
+        oldC = c;
     }
     return 0;
 }
